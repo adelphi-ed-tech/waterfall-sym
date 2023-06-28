@@ -1,45 +1,37 @@
 import simpy
 import random
 import statistics
-import sympy
-from sympy.stats import Normal
 import csv
+import pandas as pd
+import matplotlib.pyplot as plt
+import sys
+from deap import algorithms, base, creator, tools
 
-SIM_TIME = 1500
-NEW_PROJECT_LOW_TIME = 30
-MEW_PROJECT_HIGH_TIME = 40
-NEW_PROJECT_MODE_TIME = 35
+SIM_TIME = 20000
 
-# resources
-BUSINESS_ANALYSTS = 5
-DESIGNERS = 5
-PROGRAMMERS = 10
-TESTERS = 20
-MAINTENANCE_PEOPLE = 5
+NEW_PROJECT_ARRIVAL_INTERVAL = [30, 40, 35]
 
-BUSINESS_ANALYSTS_SMALL_PROJECT = 1
-BUSINESS_ANALYSTS_MEDIUM_PROJECT = 2
-BUSINESS_ANALYSTS_LARGE_PROJECT = 5
-DESIGNERS_SMALL_PROJECT = 1
-DESIGNERS_MEDIUM_PROJECT = 2
-DESIGNERS_LARGE_PROJECT = 5
-PROGRAMMERS_SMALL_PROJECT = 2
-PROGRAMMERS_MEDIUM_PROJECT = 4
-PROGRAMMERS_LARGE_PROJECT = 10
-TESTERS_SMALL_PROJECT = 2
-TESTERS_MEDIUM_PROJECT = 6
-TESTERS_LARGE_PROJECT = 20
-MAINTENANCE_PEOPLE_SMALL_PROJECT = 1
-MAINTENANCE_PEOPLE_MEDIUM_PROJECT = 2
-MAINTENANCE_PEOPLE_LARGE_PROJECT = 5
+RESOURCES = {
+    'business_analysts': 5,
+    'designers': 5,
+    'programmers': 10,
+    'testers': 20,
+    'maintenance_people': 5
+}
 
-# definitions
-smallProject = 70
-mediumProject = 25
-largeProject = 5
-smallProjectErrorProbability = 10
-mediumProjectErrorProbability = 20
-largeProjectProbability = 30
+PHASES = {
+    'requirements_analysis': {'duration_range': [3, 5], 'resource': 'business_analysts'},
+    'design': {'duration_range': [5, 10], 'resource': 'designers'},
+    'implementation': {'duration_range': [15, 20], 'resource': 'programmers'},
+    'testing': {'duration_range': [5, 10], 'resource': 'testers'},
+    'maintenance': {'duration_range': [1, 3], 'resource': 'maintenance_people'}
+}
+
+PROJECT_TYPES = {
+    'small': {'proportion': 0.7, 'requirements': {'business_analysts': 1, 'designers': 1, 'programmers': 2, 'testers': 2, 'maintenance_people': 1}, 'error_probability': 0.1},
+    'medium': {'proportion': 0.25, 'requirements': {'business_analysts': 2, 'designers': 2, 'programmers': 4, 'testers': 6, 'maintenance_people': 2}, 'error_probability': 0.2},
+    'large': {'proportion': 0.05, 'requirements': {'business_analysts': 5, 'designers': 5, 'programmers': 10, 'testers': 20, 'maintenance_people': 5}, 'error_probability': 0.3},
+}
 
 TOTAL_PROJECTS = 50
 list_of_projects = []
@@ -49,23 +41,20 @@ resources_log = []
 phases_log = []
 failure_log = []
 
+
 class SoftwareHouse(object):
-    def __init__(self, env, id_input, number_business_analyst, number_designers, number_programmers, number_testers, number_maintenance_people):
+    def __init__(self, env, id_input, resources_input):
         self.env = env
         self.id = id_input
-        self.business_analysts = simpy.Container(env, init=number_business_analyst)
-        self.designers = simpy.Container(env, init=number_designers)
-        self.programmers = simpy.Container(env, init=number_programmers)
-        self.testers = simpy.Container(env, init=number_testers)
-        self.maintenance_people = simpy.Container(env, init=number_maintenance_people)
+        self.resources = {resource: simpy.Container(env, init=amount) for resource, amount in resources_input.items()}
 
 
-def run_software_house(env, id_input, number_business_analyst, number_designers, number_programmers, number_testers, number_maintenance_people):
-    software_house = SoftwareHouse(env, id_input, number_business_analyst, number_designers, number_programmers, number_testers, number_maintenance_people)
+def run_software_house(env, id_input, resources_input):
+    software_house = SoftwareHouse(env, id_input, resources_input)
     project_number = 0
     while True:
-        new_project_wait_time = random.triangular(NEW_PROJECT_LOW_TIME, MEW_PROJECT_HIGH_TIME, NEW_PROJECT_MODE_TIME)
-        yield env.timeout(new_project_wait_time)  # wait a bit
+        new_project_wait_time = random.triangular(*NEW_PROJECT_ARRIVAL_INTERVAL)
+        yield env.timeout(new_project_wait_time)
         if project_number < TOTAL_PROJECTS:
             project_number += 1
             project = Project(software_house, project_number)
@@ -109,7 +98,6 @@ class PhasesReport(object):
 
 
 class Project(object):
-
     def __init__(self, software_house_input, id_input):
         self.software_house_id = software_house_input.id
         self.software_house = software_house_input
@@ -117,7 +105,7 @@ class Project(object):
         self.start_time = 0
         self.end_time = 0
         self.duration = 0
-        self.project_scale = 0 # 0 - not set; 1 - small; 2 - medium; 3 - large
+        self.project_scale = ""
         self.design_phase_failures = 0
         self.implementation_phase_failures = 0
         self.testing_phase_failures = 0
@@ -125,298 +113,351 @@ class Project(object):
         self.compute_project_scale()
 
     def compute_project_scale(self):
-        option = round(random.uniform(1, 100))
-        if 1 <= option <= smallProject:
-            self.project_scale = 1
-        elif smallProject < option <= smallProject + mediumProject:
-            self.project_scale = 2
-        elif smallProject + mediumProject < option <= smallProject + mediumProject + largeProject:
-            self.project_scale = 3
+        option = random.uniform(0, 1)
+        cumulative_proportion = 0
+        for project_type, item in PROJECT_TYPES.items():
+            cumulative_proportion += item['proportion']
+            if option <= cumulative_proportion:
+                self.project_scale = project_type
+                break
 
     def get_failure_probability(self):
-        failure_probability = 0
-        if self.project_scale == 1:
-            failure_probability = smallProjectErrorProbability
-        elif self.project_scale == 2:
-            failure_probability = mediumProjectErrorProbability
-        elif self.project_scale == 3:
-            failure_probability = largeProjectProbability
+        failure_probability = PROJECT_TYPES[self.project_scale]['error_probability']
         return failure_probability
 
-    def requirements_phase(self):
-        requirements_phase_start = self.software_house.env.now
-        number_of_resources = 0
-        if self.project_scale == 1:
-            number_of_resources = BUSINESS_ANALYSTS_SMALL_PROJECT
-        elif self.project_scale == 2:
-            number_of_resources = BUSINESS_ANALYSTS_MEDIUM_PROJECT
-        elif self.project_scale == 3:
-            number_of_resources = BUSINESS_ANALYSTS_LARGE_PROJECT
+    def project_resource_request(self, resource_type, number_of_resources):
+        resource = self.software_house.resources[resource_type]
+        resources_log.append(ResourceReport(resource_type, self.software_house.id, self.id, resource.level, "request", self.software_house.env.now, number_of_resources, self.project_scale))
+        yield resource.get(number_of_resources)
+        resources_log.append(ResourceReport(resource_type, self.software_house.id, self.id, resource.level, "obtain", self.software_house.env.now, number_of_resources, self.project_scale))
 
-        analysts_request_time = self.software_house.env.now
-        resources_log.append(ResourceReport("business analysts", self.software_house.id, self.id, self.software_house.business_analysts.level, "request", self.software_house.env.now, number_of_resources, self.project_scale))
-        yield self.software_house.business_analysts.get(number_of_resources)
-        analysts_obtain_time = self.software_house.env.now
-        resources_log.append(ResourceReport("business analysts", self.software_house.id, self.id, self.software_house.business_analysts.level, "obtain", self.software_house.env.now, number_of_resources, self.project_scale))
-        value = round(random.uniform(3, 5))
-        yield self.software_house.env.timeout(value)
-        resources_log.append(ResourceReport("business analysts", self.software_house.id, self.id, self.software_house.business_analysts.level, "release", self.software_house.env.now, number_of_resources, self.project_scale))
-        yield self.software_house.business_analysts.put(number_of_resources)
-        resources_log.append(ResourceReport("business analysts", self.software_house.id, self.id, self.software_house.business_analysts.level, "after release", self.software_house.env.now, number_of_resources, self.project_scale))
-        requirements_phase_end = self.software_house.env.now
-        time_to_obtain_analysts_resources = analysts_obtain_time - analysts_request_time
-        time_for_requirements_phase = requirements_phase_end - requirements_phase_start
-        phases_log.append(PhasesReport("requirements", requirements_phase_start, requirements_phase_end, time_for_requirements_phase, self.software_house.id, self.id, self.project_scale, self.software_house.env.now, time_to_obtain_analysts_resources))
+    def project_resource_release(self, resource_type, number_of_resources):
+        resource = self.software_house.resources[resource_type]
+        resources_log.append(ResourceReport(resource_type, self.software_house.id, self.id, resource.level, "release", self.software_house.env.now, number_of_resources, self.project_scale))
+        yield resource.put(number_of_resources)
+        resources_log.append(ResourceReport(resource_type, self.software_house.id, self.id, resource.level, "after release", self.software_house.env.now, number_of_resources, self.project_scale))
 
-    def design_phase(self):
-        design_phase_start = self.software_house.env.now
-        number_of_resources = 0
-        if self.project_scale == 1:
-            number_of_resources = DESIGNERS_SMALL_PROJECT
-        elif self.project_scale == 2:
-            number_of_resources = DESIGNERS_MEDIUM_PROJECT
-        elif self.project_scale == 3:
-            number_of_resources = DESIGNERS_LARGE_PROJECT
+    def project_failure_check(self, current_phase):
+        phase_names = list(PHASES.keys())
+        if current_phase in phase_names:
+            current_phase_index = phase_names.index(current_phase)
+            random_number = random.uniform(0, 1)
+            if (random_number <= self.get_failure_probability() / 100.0) and (current_phase_index > 0):
+                previous_phase_index = current_phase_index - 1
+                previous_phase_name = phase_names[previous_phase_index]
+                previous_phase_resource = PHASES.get(previous_phase_name, {}).get('resource')
+                failures_log.append(FailureReport(current_phase, previous_phase_name, self.software_house.id, self.id,self.software_house.env.now, self.project_scale))
+                yield from self.project_phase(previous_phase_name, previous_phase_resource)
+            else:
+                next_phase_index = (current_phase_index + 1) % len(phase_names)
+                next_phase_name = phase_names[next_phase_index]
+                next_phase_resource = PHASES[next_phase_name]['resource']
+                yield from self.project_phase(next_phase_name, next_phase_resource)
 
-        designers_request_time = self.software_house.env.now
-        resources_log.append(ResourceReport("designers", self.software_house.id, self.id, self.software_house.designers.level, "request", self.software_house.env.now, number_of_resources, self.project_scale))
-        yield self.software_house.designers.get(number_of_resources)
-        designers_obtain_time = self.software_house.env.now
-        resources_log.append(ResourceReport("designers", self.software_house.id, self.id, self.software_house.designers.level, "obtain", self.software_house.env.now, number_of_resources, self.project_scale))
-        value = round(random.uniform(5, 10))
-        yield self.software_house.env.timeout(value)
-        resources_log.append(ResourceReport("designers", self.software_house.id, self.id, self.software_house.designers.level, "release", self.software_house.env.now, number_of_resources, self.project_scale))
-        yield self.software_house.designers.put(number_of_resources)
-        resources_log.append(ResourceReport("designers", self.software_house.id, self.id, self.software_house.designers.level, "after release", self.software_house.env.now, number_of_resources, self.project_scale))
-        option = round(random.uniform(1, 100))
-        design_phase_end = self.software_house.env.now
-        time_to_obtain_designers_resources = designers_obtain_time - designers_request_time
-        time_for_design_phase = design_phase_end - design_phase_start
-        phases_log.append(PhasesReport("design", design_phase_start, design_phase_end, time_for_design_phase, self.software_house.id, self.id, self.project_scale, self.software_house.env.now, time_to_obtain_designers_resources))
-        if 1 <= option <= self.get_failure_probability():
-            self.design_phase_failures += 1
-            failures_log.append(FailureReport("design phase", "requirements phase", self.software_house.id, self.id, self.software_house.env.now, self.project_scale))
-            yield self.software_house.env.process(self.requirements_phase())
-
-    def implementation_phase(self):
-        implementation_phase_start = self.software_house.env.now
-        number_of_resources = 0
-        if self.project_scale == 1:
-            number_of_resources = PROGRAMMERS_SMALL_PROJECT
-        elif self.project_scale == 2:
-            number_of_resources = PROGRAMMERS_MEDIUM_PROJECT
-        elif self.project_scale == 3:
-            number_of_resources = PROGRAMMERS_LARGE_PROJECT
-
-        programmers_request_time = self.software_house.env.now
-        resources_log.append(ResourceReport("programmers", self.software_house.id, self.id, self.software_house.programmers.level, "request", self.software_house.env.now, number_of_resources, self.project_scale))
-        yield self.software_house.programmers.get(number_of_resources)
-        programmers_obtain_time = self.software_house.env.now
-        resources_log.append(ResourceReport("programmers", self.software_house.id, self.id, self.software_house.programmers.level, "obtain", self.software_house.env.now, number_of_resources, self.project_scale))
-        value = round(random.uniform(15, 20))
-        yield self.software_house.env.timeout(value)
-        resources_log.append(ResourceReport("programmers", self.software_house.id, self.id, self.software_house.programmers.level, "release", self.software_house.env.now, number_of_resources, self.project_scale))
-        yield self.software_house.programmers.put(number_of_resources)
-        resources_log.append(ResourceReport("programmers", self.software_house.id, self.id, self.software_house.programmers.level, "after release", self.software_house.env.now, number_of_resources, self.project_scale))
-        option = round(random.uniform(1, 100))
-        implementation_phase_end = self.software_house.env.now
-        time_to_obtain_programmers_resources = programmers_obtain_time - programmers_request_time
-        time_for_implementation_phase = implementation_phase_end - implementation_phase_start
-        phases_log.append(PhasesReport("implementation", implementation_phase_start, implementation_phase_end, time_for_implementation_phase, self.software_house.id, self.id, self.project_scale, self.software_house.env.now, time_to_obtain_programmers_resources))
-        if 1 <= option <= self.get_failure_probability():
-            self.implementation_phase_failures += 1
-            failures_log.append(FailureReport("design phase", "requirements phase", self.software_house.id, self.id, self.software_house.env.now, self.project_scale))
-            yield self.software_house.env.process(self.design_phase())
-
-    def testing_phase(self):
-        testing_phase_start = self.software_house.env.now
-        number_of_resources = 0
-        if self.project_scale == 1:
-            number_of_resources = TESTERS_SMALL_PROJECT
-        elif self.project_scale == 2:
-            number_of_resources = TESTERS_MEDIUM_PROJECT
-        elif self.project_scale == 3:
-            number_of_resources = TESTERS_LARGE_PROJECT
-
-        testers_request_time = self.software_house.env.now
-        resources_log.append(ResourceReport("testers", self.software_house.id, self.id, self.software_house.testers.level, "request", self.software_house.env.now, number_of_resources, self.project_scale))
-        yield self.software_house.testers.get(number_of_resources)
-        testers_obtain_time = self.software_house.env.now
-        resources_log.append(ResourceReport("testers", self.software_house.id, self.id, self.software_house.testers.level, "obtain", self.software_house.env.now, number_of_resources, self.project_scale))
-        value = round(random.uniform(5, 10))
-        yield self.software_house.env.timeout(value)
-        resources_log.append(ResourceReport("testers", self.software_house.id, self.id, self.software_house.testers.level, "release", self.software_house.env.now, number_of_resources, self.project_scale))
-        yield self.software_house.testers.put(number_of_resources)
-        resources_log.append(ResourceReport("testers", self.software_house.id, self.id, self.software_house.testers.level, "after release", self.software_house.env.now, number_of_resources, self.project_scale))
-        option = round(random.uniform(1, 100))
-        testing_phase_end = self.software_house.env.now
-        time_to_obtain_testers_resources = testers_obtain_time - testers_request_time
-        time_for_testing_phase = testing_phase_end - testing_phase_start
-        phases_log.append(PhasesReport("testing", testing_phase_start, testing_phase_end, time_for_testing_phase, self.software_house.id, self.id, self.project_scale, self.software_house.env.now, time_to_obtain_testers_resources))
-        if 1 <= option <= self.get_failure_probability():
-            self.testing_phase_failures += 1
-            failures_log.append(FailureReport("design phase", "requirements phase", self.software_house.id, self.id, self.software_house.env.now, self.project_scale))
-            yield self.software_house.env.process(self.implementation_phase())
-
-    def maintenance_phase(self):
-        maintenance_phase_start = self.software_house.env.now
-        number_of_resources = 0
-        if self.project_scale == 1:
-            number_of_resources = MAINTENANCE_PEOPLE_SMALL_PROJECT
-        elif self.project_scale == 2:
-            number_of_resources = MAINTENANCE_PEOPLE_MEDIUM_PROJECT
-        elif self.project_scale == 3:
-            number_of_resources = MAINTENANCE_PEOPLE_LARGE_PROJECT
-
-        maintenance_people_request_time = self.software_house.env.now
-        resources_log.append(ResourceReport("maintenance people", self.software_house.id, self.id, self.software_house.maintenance_people.level, "request", self.software_house.env.now, number_of_resources, self.project_scale))
-        yield self.software_house.maintenance_people.get(number_of_resources)
-        maintenance_people_obtain_time = self.software_house.env.now
-        resources_log.append(ResourceReport("maintenance people", self.software_house.id, self.id, self.software_house.maintenance_people.level, "obtain", self.software_house.env.now, number_of_resources, self.project_scale))
-        value = round(random.uniform(1, 3))
-        yield self.software_house.env.timeout(value)
-        resources_log.append(ResourceReport("maintenance people", self.software_house.id, self.id, self.software_house.maintenance_people.level, "release", self.software_house.env.now, number_of_resources, self.project_scale))
-        yield self.software_house.maintenance_people.put(number_of_resources)
-        resources_log.append(ResourceReport("maintenance people", self.software_house.id, self.id, self.software_house.maintenance_people.level, "after release", self.software_house.env.now, number_of_resources, self.project_scale))
-        option = round(random.uniform(1, 100))
-        maintenance_phase_end = self.software_house.env.now
-        time_to_obtain_maintenance_people_resources = maintenance_people_obtain_time - maintenance_people_request_time
-        time_for_maintenance_phase = maintenance_phase_end - maintenance_phase_start
-        phases_log.append(PhasesReport("maintenance", maintenance_phase_start, maintenance_phase_end, time_for_maintenance_phase, self.software_house.id, self.id, self.project_scale, self.software_house.env.now, time_to_obtain_maintenance_people_resources))
-        if 1 <= option <= self.get_failure_probability():
-            self.maintenance_phase_failures += 1
-            failures_log.append(FailureReport("maintenance phase", "testing phase", self.software_house.id, self.id, self.software_house.env.now, self.project_scale))
-            yield self.software_house.env.process(self.testing_phase())
+    def project_phase(self, phase_name, resource_type):
+        phase_start = self.software_house.env.now
+        yield from self.project_resource_request(resource_type, PROJECT_TYPES[self.project_scale]['requirements'][resource_type])
+        phase_obtain_time = self.software_house.env.now
+        duration = round(random.uniform(*PHASES[phase_name]['duration_range']))
+        yield self.software_house.env.timeout(duration)
+        yield from self.project_resource_release(resource_type, PROJECT_TYPES[self.project_scale]['requirements'][resource_type])
+        phase_end = self.software_house.env.now
+        time_to_obtain_resources = phase_obtain_time - phase_start
+        time_for_phase = phase_end - phase_start
+        phases_log.append(PhasesReport(phase_name, phase_start, phase_end, time_for_phase, self.software_house.id, self.id, self.project_scale, self.software_house.env.now, time_to_obtain_resources))
+        yield from self.project_failure_check(phase_name)
 
     def start_project(self):
-        # Project begins
         self.start_time = self.software_house.env.now
 
-        yield self.software_house.env.process(self.requirements_phase())
-        yield self.software_house.env.process(self.design_phase())
-        yield self.software_house.env.process(self.implementation_phase())
-        yield self.software_house.env.process(self.testing_phase())
-        yield self.software_house.env.process(self.maintenance_phase())
+        first_phase_name, first_phase_details = next(iter(PHASES.items()))
+        first_resource = first_phase_details['resource']
+        yield from self.project_phase(first_phase_name, first_resource)
 
         self.end_time = self.software_house.env.now
         self.duration = self.end_time - self.start_time
-        # project ends
+
+
+def get_mean_wait_time(phase):
+    phases_temo_data100 = []
+    # Calculate the initial implementation mean
+    for activity in phases_log:
+        phases_temo_data100.append([
+            activity.phase, activity.phase_start, activity.phase_end, activity.phase_duration,
+            activity.software_house_id,
+            activity.project_id, activity.project_scale, activity.timestamp, activity.resources_obtain_time])
+    phases_df100 = pd.DataFrame(phases_temo_data100, columns=[
+        "Phase", "Phase Start", "Phase End", "Phase Duration", "Iteration", "Project Id", "Project Scale",
+        "Timestamp", "Wait Time to Obtain Resources"
+    ])
+    wait_time_stats_by_phase100 = phases_df100.groupby("Phase")["Wait Time to Obtain Resources"].mean().reset_index()
+    implementation_row100 = wait_time_stats_by_phase100[wait_time_stats_by_phase100["Phase"] == phase]
+    if implementation_row100.empty:
+        implementation_mean100 = 0
+    else:
+        implementation_mean100 = implementation_row100["Wait Time to Obtain Resources"].values[0]
+    return implementation_mean100
+
+
+def reset_simulation_data():
+    phases_log.clear()
+
+
+def optimize_resource(phase, resource_name, min_value, max_value, initial_step_size):
+    step_size = initial_step_size
+    best_mean = get_mean_wait_time(phase)
+
+    # Set the smallest step size we'll consider
+    min_step_size = 1
+
+    print ("starting optimization of ", phase)
+    while step_size >= min_step_size:
+        for direction in [-1, 1]:
+            RESOURCES[resource_name] += direction * step_size
+            RESOURCES[resource_name] = min(max(RESOURCES[resource_name], min_value), max_value)
+
+            reset_simulation_data()
+            simulate()
+            new_mean = get_mean_wait_time(phase)
+
+            if new_mean < best_mean:
+                best_mean = new_mean
+                break
+        else:
+            step_size //= 2
+
+    print(f"Optimal Number of {resource_name}:", RESOURCES[resource_name])
+    print ("ending optimization of ", phase)
+
+
+def optimize_resources():
+    # minimum should be the lowest value to run a large project
+    min_business_analysts = PROJECT_TYPES['large']['requirements']['business_analysts']
+    max_business_analysts = 200
+    business_analyst_step_size = 1
+    min_designers = PROJECT_TYPES['large']['requirements']['designers']
+    max_designers = 200
+    designer_step_size = 1
+    min_programmers = PROJECT_TYPES['large']['requirements']['programmers']
+    max_programmers = 200
+    programmer_step_size = 1
+    min_testers = PROJECT_TYPES['large']['requirements']['testers']
+    max_testers = 200
+    tester_step_size = 1
+    min_maintenance_people = PROJECT_TYPES['large']['requirements']['maintenance_people']
+    max_maintenance_people = 200
+    maintenance_people_step_size = 1
+    resources_info = [
+        ('requirements_analysis', 'business_analysts', min_business_analysts, max_business_analysts, business_analyst_step_size),
+        ('design', 'designers', min_designers, max_designers, designer_step_size),
+        ('implementation', 'programmers', min_programmers, max_programmers, programmer_step_size),
+        ('testing', 'testers', min_testers, max_testers, tester_step_size),
+        ('maintenance', 'maintenance_people', min_maintenance_people, max_maintenance_people, maintenance_people_step_size)
+    ]
+
+    for phase, resource_name, min_value, max_value, initial_step_size in resources_info:
+        optimize_resource(phase, resource_name, min_value, max_value, initial_step_size)
 
 
 def main():
+    new_recursion_limit = 3000  # Set the new recursion limit
+
+    # Check if the new recursion limit is within the allowable range
+    if new_recursion_limit > sys.getrecursionlimit():
+        print("Warning: New recursion limit is higher than the default limit of ", sys.getrecursionlimit(), ".")
+
+    sys.setrecursionlimit(new_recursion_limit)  # Set the new recursion limit
+
+    print("New recursion limit:", sys.getrecursionlimit())  # Print the updated recursion limit
+
+    optimize_resources()
+
+
+def simulate():
+    # for i in range(1, 6):
     for i in range(1, 6):
         random.seed(random.random())
         env = simpy.Environment()
-        env.process(run_software_house(env, i, BUSINESS_ANALYSTS, DESIGNERS, PROGRAMMERS, TESTERS, MAINTENANCE_PEOPLE))
+        env.process(run_software_house(env, i, RESOURCES))
         env.run(until=SIM_TIME)
-        print(f"attempt {i} done!")
-        report()
-
-
-def print_stats(res):
-    print(f'{res.count} of {res.capacity} slots are allocated')
-    print(f'   Users: {res.users}')
-    print(f'   Number of Users: {len(res.users)}')
-    print(f'   Queued events: {res.queue}')
-    print(f'   Number of Queued events: {len(res.queue)}')
-
-
-def user(res):
-    print_stats(res)
-    with res.request() as req:
-        yield req
-        print_stats(res)
-    print_stats(res)
+        print(f"iteration {i} done!")
 
 
 def report():
-    total_time = 0
-    count = 0
-    no_size_project_count = []
-    small_project_count = []
-    medium_project_count = []
-    large_project_count = []
-
-    # get highest number of iterations and initialize lists
-    highest_value = 0
-    for individual_project in list_of_projects:
-        if individual_project.id > highest_value:
-            highest_value = individual_project.id
-
-    small_project_count = [0] * highest_value
-    medium_project_count = [0] * highest_value
-    large_project_count = [0] * highest_value
+    project_data = []
+    resources_data = []
+    phases_data = []
+    failures_data = []
 
     for individual_project in list_of_projects:
-        total_time += (individual_project.end_time - individual_project.start_time)
-        if individual_project.project_scale == 0:
-            no_size_project_count[individual_project.id - 1] += 1
-        elif individual_project.project_scale == 1:
-            small_project_count[individual_project.id - 1] += 1
-        elif individual_project.project_scale == 2:
-            medium_project_count[individual_project.id - 1] += 1
-        elif individual_project.project_scale == 3:
-            large_project_count[individual_project.id - 1] += 1
+        project_completion = "NO" if individual_project.end_time == 0 else "YES"
+        project_data.append([
+            individual_project.software_house_id, individual_project.id, individual_project.start_time,
+            individual_project.end_time, individual_project.duration, individual_project.project_scale,
+            individual_project.design_phase_failures, individual_project.implementation_phase_failures,
+            individual_project.testing_phase_failures, individual_project.maintenance_phase_failures, project_completion
+        ])
 
-    file = open("project_data.csv", "w")
-    writer = csv.writer(file)
-    writer.writerow(["Software House Id", "Project Id", "Project Start Time", "Project End Time", "Duration", "Project Scale",
-                     "Number of Design Phase Failures", "Number of Implementation Phase Failures",
-                     "Number of Testing Phase Failures", "Number of Maintenance Phase Failures", "Project Completion"])
-    for individual_project in list_of_projects:
-        project_completion = ""
-        if individual_project.end_time == 0:
-            project_completion = "NO"
-        else:
-            project_completion = "YES"
-        writer.writerow([individual_project.software_house_id, individual_project.id, individual_project.start_time,
-                         individual_project.end_time, individual_project.duration, individual_project.project_scale,
-                         individual_project.design_phase_failures, individual_project.implementation_phase_failures,
-                         individual_project.testing_phase_failures, individual_project.maintenance_phase_failures, project_completion])
-    file.close()
-
-    file = open("resources_report.csv", "w")
-    writer = csv.writer(file)
-    writer.writerow(["Resource Type", "Software House Id", "Project Id", "Resources Available", "Action", "Timestamp", "Resources Requested", "Project Scale"])
     for activity in resources_log:
-        writer.writerow([activity.type_of_resource, activity.software_house_id, activity.project_id, activity.resources_available,
-                         activity.action, activity.timestamp, activity.number_of_resources_request, activity.project_scale])
-    file.close()
+        resources_data.append([
+            activity.type_of_resource, activity.software_house_id, activity.project_id, activity.resources_available,
+            activity.action, activity.timestamp, activity.number_of_resources_request, activity.project_scale
+        ])
 
-    file = open("phases_report.csv", "w")
-    writer = csv.writer(file)
-    writer.writerow(["Phase", "Phase Start", "Phase End", "Phase Duration", "Software House Id", "Project Id", "Project Scale", "Timestamp", "Wait Time to Obtain Resources"])
     for activity in phases_log:
-        writer.writerow(
-            [activity.phase, activity.phase_start, activity.phase_end, activity.phase_duration, activity.software_house_id, activity.project_id, activity.project_scale, activity.timestamp, activity.resources_obtain_time])
-    file.close()
+        phases_data.append([
+            activity.phase, activity.phase_start, activity.phase_end, activity.phase_duration, activity.software_house_id,
+            activity.project_id, activity.project_scale, activity.timestamp, activity.resources_obtain_time
+        ])
 
-    file = open("failures_report.csv", "w")
-    writer = csv.writer(file)
-    writer.writerow(["Current Phase", "Fail to Phase", "Software House Id", "Project Id", "Timestamp", "Project Scale"])
     for activity in failures_log:
-        writer.writerow(
-            [activity.current_phase, activity.fail_to_phase, activity.software_house_id, activity.project_id, activity.timestamp, activity.project_scale])
-    file.close()
+        failures_data.append([
+            activity.current_phase, activity.fail_to_phase, activity.software_house_id, activity.project_id,
+            activity.timestamp, activity.project_scale
+        ])
 
-    #average_wait = total_time / count
-    #minutes, frac_minutes = divmod(average_wait, 1)
-    #seconds = frac_minutes * 60
-    #print("Running sim", f"is {minutes} and {seconds} ok")
-    print("---------------------------------------------")
-    print("Projects by size")
-    #print("No Size", f" {no_size_project_count}")
-    #print("Small", f" {small_project_count}")
-    #print("Medium", f" {medium_project_count}")
-    #print("Large", f" {large_project_count}")
+    project_df = pd.DataFrame(project_data, columns=[
+        "Iteration", "Project Id", "Project Start Time", "Project End Time", "Duration", "Project Scale",
+        "Number of Design Phase Failures", "Number of Implementation Phase Failures",
+        "Number of Testing Phase Failures", "Number of Maintenance Phase Failures", "Project Completion"
+    ])
 
-    #self.design_phase_failure = 0
-    #self.implementation_phase_failure = 0
-    #self.testing_phase_failure = 0
-    #self.maintenance_phase_failure = 0
+    resources_df = pd.DataFrame(resources_data, columns=[
+        "Resource Type", "Iteration", "Project Id", "Resources Available", "Action", "Timestamp",
+        "Resources Requested", "Project Scale"
+    ])
+
+    phases_df = pd.DataFrame(phases_data, columns=[
+        "Phase", "Phase Start", "Phase End", "Phase Duration", "Iteration", "Project Id", "Project Scale",
+        "Timestamp", "Wait Time to Obtain Resources"
+    ])
+
+    failures_df = pd.DataFrame(failures_data, columns=[
+        "Current Phase", "Fail to Phase", "Iteration", "Project Id", "Timestamp", "Project Scale"
+    ])
+
+    project_df.to_csv("project_data.csv", index=False)
+    resources_df.to_csv("resources_report.csv", index=False)
+    phases_df.to_csv("phases_report.csv", index=False)
+    failures_df.to_csv("failures_report.csv", index=False)
+
+    # Output simulation statistics
+
+    # Count the occurrences of each project scale
+    scale_counts = project_df["Project Scale"].value_counts()
+
+    # Calculate the average number of projects by scale
+    average_projects_by_scale = scale_counts.mean()
+
+    # Create a new DataFrame to store the results
+    result_df = pd.DataFrame({"Project Scale": scale_counts.index, "Count": scale_counts.values})
+
+    # Add a row for the average number of projects
+    average_row = pd.DataFrame({"Project Scale": ["Average"], "Count": [average_projects_by_scale]})
+    result_df = pd.concat([result_df, average_row], ignore_index=True)
+
+    # Get the number of unique iterations
+    num_unique_software_houses = len(project_df["Iteration"].unique())
+
+    # Add a new column "Average" by dividing the "Count" column by number of iterations
+    result_df["Average"] = result_df["Count"] / num_unique_software_houses
+
+    # Calculate the total duration by project scale
+    total_duration_by_scale = project_df.groupby("Project Scale")["Duration"].sum().reset_index()
+
+    # Merge the total duration by scale with the result_df DataFrame
+    result_df = result_df.merge(total_duration_by_scale, on="Project Scale")
+
+    # Rename the column for clarity
+    result_df = result_df.rename(columns={"Duration": "Total Duration"})
+
+    # Calculate the average duration by dividing "Total Duration" by "Count"
+    result_df["Average Duration"] = result_df["Total Duration"] / result_df["Count"]
+
+    # Print the result DataFrame
+    print("Number of Projects Average by Project Scale Across All Iterations:")
+    print(result_df)
+
+    ##########################################################
+
+    # Group the data by the "Phase" column and calculate the average, minimum, and maximum duration
+    duration_stats_by_phase = phases_df.groupby("Phase")["Phase Duration"].agg(["mean", "min", "max"]).reset_index()
+
+    # Rename the columns for clarity
+    duration_stats_by_phase = duration_stats_by_phase.rename(
+        columns={"mean": "Average Duration", "min": "Minimum Duration", "max": "Maximum Duration"})
+
+    # Display the new table in a tabular format
+    print("Duration Statistics by Phase:")
+    print(duration_stats_by_phase.to_string(index=False))
+
+    ##########################################################
+
+    # Calculate the duration statistics by phase and project scale using pivot_table
+    duration_stats_by_phase_scale = pd.pivot_table(phases_df, values="Phase Duration", index="Phase",
+                                                   columns="Project Scale",
+                                                   aggfunc=["mean", "min", "max"]).reset_index()
+
+    # Rename the columns for clarity
+    duration_stats_by_phase_scale.columns = ["Phase", "Large Scale (Mean)", "Medium Scale (Mean)", "Small Scale (Mean)",
+                                             "Large Scale (Min)", "Medium Scale (Min)", "Small Scale (Min)",
+                                             "Large Scale (Max)", "Medium Scale (Max)", "Small Scale (Max)"]
+
+    # Display the new table in a tabular format
+    print("Duration Statistics by Phase and Project Scale:")
+    print(duration_stats_by_phase_scale.to_string(index=False))
+
+    ##########################################################
+
+    # Group the data by "Phase" and calculate the average wait time to obtain resources
+    wait_time_stats_by_phase = phases_df.groupby("Phase")["Wait Time to Obtain Resources"].mean().reset_index()
+
+    # Display the wait time statistics by phase in a tabular format
+    print("Wait Time to Obtain Resources by Phase:")
+    print(wait_time_stats_by_phase)
+
+    ##########################################################
+
+    # Compute power for each phase
+    phases_df['Power'] = 1 / phases_df['Phase Duration']
+
+    # Group data by 'Phase' and calculate the mean power
+    power_by_phase = phases_df.groupby('Phase')['Power'].mean().reset_index()
+
+    # Print power for each phase
+    print("Power for each Phase:")
+    print(power_by_phase)
+
+    ##########################################################
+
+def analyze_simulation_results():
+    # Load the simulation results from CSV files
+    project_df = pd.read_csv("project_data.csv")
+    resources_df = pd.read_csv("resources_report.csv")
+    phases_df = pd.read_csv("phases_report.csv")
+    failures_df = pd.read_csv("failures_report.csv")
+
+    # Resource Utilization
+    resource_utilization = resources_df.groupby("Resource Type")["Resources Available"].mean()
+    print("Resource Utilization:")
+    print(resource_utilization)
+
+    # Phase Duration Variation
+    phase_duration_variation = phases_df.groupby(["Phase", "Project Scale"])["Phase Duration"].std()
+    print("Phase Duration Variation:")
+    print(phase_duration_variation)
+
+    # Failure Analysis
+    failure_counts = failures_df["Current Phase"].value_counts()
+    print("Failure Counts by Phase:")
+    print(failure_counts)
+
+    # Phase Overlap
+    phase_overlap = phases_df.groupby("Project Id")[["Phase Start", "Phase End"]].agg(["min", "max"])
+    phase_overlap["Overlap"] = phase_overlap[("Phase Start", "max")] - phase_overlap[("Phase End", "min")]
+    print("Phase Overlap:")
+    print(phase_overlap["Overlap"])
 
 
 if __name__ == '__main__':
     main()
-
-
