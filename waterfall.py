@@ -1,11 +1,7 @@
 import simpy
 import random
-import statistics
-import csv
 import pandas as pd
-import matplotlib.pyplot as plt
 import sys
-from deap import algorithms, base, creator, tools
 
 SIM_TIME = 20000
 
@@ -178,25 +174,16 @@ class Project(object):
         self.duration = self.end_time - self.start_time
 
 
-def get_mean_wait_time(phase):
-    phases_temo_data100 = []
-    # Calculate the initial implementation mean
+def get_mean_wait_time(phase_name):
+    wait_times = []
     for activity in phases_log:
-        phases_temo_data100.append([
-            activity.phase, activity.phase_start, activity.phase_end, activity.phase_duration,
-            activity.software_house_id,
-            activity.project_id, activity.project_scale, activity.timestamp, activity.resources_obtain_time])
-    phases_df100 = pd.DataFrame(phases_temo_data100, columns=[
-        "Phase", "Phase Start", "Phase End", "Phase Duration", "Iteration", "Project Id", "Project Scale",
-        "Timestamp", "Wait Time to Obtain Resources"
-    ])
-    wait_time_stats_by_phase100 = phases_df100.groupby("Phase")["Wait Time to Obtain Resources"].mean().reset_index()
-    implementation_row100 = wait_time_stats_by_phase100[wait_time_stats_by_phase100["Phase"] == phase]
-    if implementation_row100.empty:
-        implementation_mean100 = 0
+        if activity.phase == phase_name:
+            wait_times.append(activity.resources_obtain_time)
+    if wait_times:
+        mean_wait_time = sum(wait_times) / len(wait_times)
     else:
-        implementation_mean100 = implementation_row100["Wait Time to Obtain Resources"].values[0]
-    return implementation_mean100
+        mean_wait_time = 0
+    return mean_wait_time
 
 
 def reset_simulation_data():
@@ -210,9 +197,16 @@ def optimize_resource(phase, resource_name, min_value, max_value, initial_step_s
     # Set the smallest step size we'll consider
     min_step_size = 1
 
+    # Number of iterations without improvements
+    no_improvements = 0
+
+    # Maximum number of iterations without improvements
+    max_no_improvements = 10
+
     print ("starting optimization of ", phase)
     while step_size >= min_step_size:
-        for direction in [-1, 1]:
+        for direction in [1, -1]:
+            old_resource_value = RESOURCES[resource_name]
             RESOURCES[resource_name] += direction * step_size
             RESOURCES[resource_name] = min(max(RESOURCES[resource_name], min_value), max_value)
 
@@ -220,42 +214,72 @@ def optimize_resource(phase, resource_name, min_value, max_value, initial_step_s
             simulate()
             new_mean = get_mean_wait_time(phase)
 
-            if new_mean < best_mean:
+            # If we haven't made an improvement, restore the old resource value
+            if new_mean >= best_mean:
+                RESOURCES[resource_name] = old_resource_value
+                no_improvements += 1
+            else:
                 best_mean = new_mean
-                break
-        else:
+                no_improvements = 0
+
+                # Adjust the step size based on the rate of improvement
+                step_size = max(min_step_size, int(abs(new_mean - best_mean) * step_size))
+
+            if no_improvements >= max_no_improvements:
+                # Random restart
+                RESOURCES[resource_name] = random.randint(min_value, max_value)
+                no_improvements = 0
+
+        # If we couldn't improve in either direction, reduce the step size
+        if RESOURCES[resource_name] == old_resource_value:
             step_size //= 2
 
     print(f"Optimal Number of {resource_name}:", RESOURCES[resource_name])
     print ("ending optimization of ", phase)
 
+    return best_mean
+
 
 def optimize_resources():
     # minimum should be the lowest value to run a large project
-    min_business_analysts = PROJECT_TYPES['large']['requirements']['business_analysts']
-    max_business_analysts = 200
-    business_analyst_step_size = 1
-    min_designers = PROJECT_TYPES['large']['requirements']['designers']
-    max_designers = 200
-    designer_step_size = 1
-    min_programmers = PROJECT_TYPES['large']['requirements']['programmers']
-    max_programmers = 200
-    programmer_step_size = 1
-    min_testers = PROJECT_TYPES['large']['requirements']['testers']
-    max_testers = 200
-    tester_step_size = 1
-    min_maintenance_people = PROJECT_TYPES['large']['requirements']['maintenance_people']
-    max_maintenance_people = 200
-    maintenance_people_step_size = 1
-    resources_info = [
-        ('requirements_analysis', 'business_analysts', min_business_analysts, max_business_analysts, business_analyst_step_size),
-        ('design', 'designers', min_designers, max_designers, designer_step_size),
-        ('implementation', 'programmers', min_programmers, max_programmers, programmer_step_size),
-        ('testing', 'testers', min_testers, max_testers, tester_step_size),
-        ('maintenance', 'maintenance_people', min_maintenance_people, max_maintenance_people, maintenance_people_step_size)
-    ]
+    resource_info = {
+        'business_analysts': {
+            'phase': 'requirements_analysis',
+            'min_value': PROJECT_TYPES['large']['requirements']['business_analysts'],
+            'max_value': 200,
+            'step_size': 1
+        },
+        'designers': {
+            'phase': 'design',
+            'min_value': PROJECT_TYPES['large']['requirements']['designers'],
+            'max_value': 200,
+            'step_size': 1
+        },
+        'programmers': {
+            'phase': 'implementation',
+            'min_value': PROJECT_TYPES['large']['requirements']['programmers'],
+            'max_value': 200,
+            'step_size': 1
+        },
+        'testers': {
+            'phase': 'testing',
+            'min_value': PROJECT_TYPES['large']['requirements']['testers'],
+            'max_value': 200,
+            'step_size': 1
+        },
+        'maintenance_people': {
+            'phase': 'maintenance',
+            'min_value': PROJECT_TYPES['large']['requirements']['maintenance_people'],
+            'max_value': 200,
+            'step_size': 1
+        }
+    }
 
-    for phase, resource_name, min_value, max_value, initial_step_size in resources_info:
+    for resource_name, resource_data in resource_info.items():
+        phase = resource_data['phase']
+        min_value = resource_data['min_value']
+        max_value = resource_data['max_value']
+        initial_step_size = resource_data['step_size']
         optimize_resource(phase, resource_name, min_value, max_value, initial_step_size)
 
 
@@ -429,6 +453,7 @@ def report():
     print(power_by_phase)
 
     ##########################################################
+
 
 def analyze_simulation_results():
     # Load the simulation results from CSV files
