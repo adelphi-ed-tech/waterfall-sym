@@ -2,8 +2,8 @@ import simpy
 import random
 import pandas as pd
 import sys
-
-SIM_TIME = 20000
+import numpy as np
+import scipy.stats as stats
 
 NEW_PROJECT_ARRIVAL_INTERVAL = [30, 40, 35]
 
@@ -175,15 +175,66 @@ class Project(object):
 
 
 def get_mean_wait_time(phase_name):
-    wait_times = []
+    phases_data = []
     for activity in phases_log:
-        if activity.phase == phase_name:
-            wait_times.append(activity.resources_obtain_time)
-    if wait_times:
-        mean_wait_time = sum(wait_times) / len(wait_times)
+        phases_data.append([
+            activity.phase, activity.phase_start, activity.phase_end, activity.phase_duration, activity.software_house_id,
+            activity.project_id, activity.project_scale, activity.timestamp, activity.resources_obtain_time
+        ])
+    phases_df = pd.DataFrame(phases_data, columns=[
+        "Phase", "Phase Start", "Phase End", "Phase Duration", "Iteration", "Project Id", "Project Scale",
+        "Timestamp", "Wait Time to Obtain Resources"
+    ])
+    phase_data = phases_df[phases_df['Phase'] == phase_name]
+    wait_times = phase_data['Wait Time to Obtain Resources']
+    if not wait_times.empty:
+        mean_wait_time = wait_times.mean()
     else:
         mean_wait_time = 0
     return mean_wait_time
+
+
+def get_mean_completion_time(phase_name):
+    phases_data = []
+    for activity in phases_log:
+        phases_data.append([
+            activity.phase, activity.phase_start, activity.phase_end, activity.phase_duration,
+            activity.software_house_id,
+            activity.project_id, activity.project_scale, activity.timestamp, activity.resources_obtain_time
+        ])
+    phases_df = pd.DataFrame(phases_data, columns=[
+        "Phase", "Phase Start", "Phase End", "Phase Duration", "Iteration", "Project Id", "Project Scale",
+        "Timestamp", "Wait Time to Obtain Resources"
+    ])
+    phase_data = phases_df[phases_df['Phase'] == phase_name]
+    completion_times = phase_data['Phase Duration']
+    if not completion_times.empty:
+        mean_completion_time = completion_times.mean()
+    else:
+        mean_wait_time = 0
+    return mean_completion_time
+
+
+def get_mean_completion_time(phase_name, iteration):
+    phases_data = []
+    for activity in phases_log:
+        phases_data.append([
+            activity.phase, activity.phase_start, activity.phase_end, activity.phase_duration,
+            activity.software_house_id,
+            activity.project_id, activity.project_scale, activity.timestamp, activity.resources_obtain_time
+        ])
+    phases_df = pd.DataFrame(phases_data, columns=[
+        "Phase", "Phase Start", "Phase End", "Phase Duration", "Iteration", "Project Id", "Project Scale",
+        "Timestamp", "Wait Time to Obtain Resources"
+    ])
+    filtered_data = phases_df[(phases_df['Phase'] == phase_name) &
+                              (phases_df['Iteration'] == iteration)]
+    completion_times = filtered_data['Phase Duration']
+    if not completion_times.empty:
+        mean_completion_time = completion_times.mean()
+    else:
+        mean_completion_time = 0
+    return mean_completion_time
 
 
 def reset_simulation_data():
@@ -294,17 +345,66 @@ def main():
 
     print("New recursion limit:", sys.getrecursionlimit())  # Print the updated recursion limit
 
+    print("resources initial simulation")
+    simulate()
+
+    print("optimizing resources")
     optimize_resources()
+
+    print("running optimized simulation")
+    simulate()
+
+    report()
 
 
 def simulate():
-    # for i in range(1, 6):
-    for i in range(1, 6):
+    RATE_OF_CHANGE_THRESHOLD = 0.01  # You might need to adjust this threshold depending on your specific simulation.
+    MAX_ITERATIONS = 100
+    NUM_OF_PHASES = 5
+    CONVERGENCE_STREAK_THRESHOLD = 3
+
+    def is_converged(means, prev_means):
+        return all(abs((mean - prev_mean) / (prev_mean if prev_mean != 0 else 1)) < RATE_OF_CHANGE_THRESHOLD for mean, prev_mean in zip(means, prev_means))
+
+    output_data = [[] for _ in range(NUM_OF_PHASES)]
+    prev_means = [0] * NUM_OF_PHASES
+    consecutive_non_improvements = 0
+    phases = ['requirements_analysis', 'design', 'implementation', 'testing', 'maintenance']
+
+    for num_iterations in range(1, MAX_ITERATIONS + 1):
+        reset_simulation_data()
         random.seed(random.random())
         env = simpy.Environment()
-        env.process(run_software_house(env, i, RESOURCES))
-        env.run(until=SIM_TIME)
-        print(f"iteration {i} done!")
+        env.process(run_software_house(env, num_iterations, RESOURCES))
+        env.run(until=num_iterations * 1000)  # I've used num_iterations as a basic scaling factor for simulation time
+
+        for i, phase in enumerate(phases):
+            output_data[i].append(get_mean_completion_time(phase, num_iterations))
+
+        means = [np.mean(variable_data) for variable_data in output_data]
+
+        print(f"Iteration {num_iterations} done!")
+        if is_converged(means, prev_means):
+            consecutive_non_improvements += 1
+            if consecutive_non_improvements >= CONVERGENCE_STREAK_THRESHOLD:
+                print("Convergence achieved")
+                return
+        else:
+            consecutive_non_improvements = 0
+
+        prev_means = means
+
+
+    # Rest of the code...
+
+
+    #comTime =  get_mean_completion_time('design')
+    #print ("design mean completion time is ", comTime)
+
+    # Initialize variables for convergence analysis
+    output_data = []
+
+    # Run the simulation and collect data for the output metric
 
 
 def report():
