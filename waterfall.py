@@ -19,9 +19,6 @@ import random
 import pandas as pd
 import sys
 import numpy as np
-import scipy.stats as stats
-import seaborn as sns
-import matplotlib.pyplot as plt
 
 from settings import *
 
