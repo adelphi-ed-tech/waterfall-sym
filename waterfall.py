@@ -22,7 +22,6 @@ import numpy as np
 import scipy.stats as stats
 import seaborn as sns
 import matplotlib.pyplot as plt
-from IPython.display import display
 
 from settings import *
 
