@@ -3,11 +3,7 @@
 Runs a software project management simulation based on the
 waterfall model of software development. 
 
-
 ## Installation
-
-Or for development:
-
 ```bash
 git clone git@github.com:adelphi-ed-tech/waterfall-sym.git
 cd waterfall-sym
